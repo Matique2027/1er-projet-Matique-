@@ -21,6 +21,10 @@ button{margin-top:16px;width:100%;padding:12px;border:0;border-radius:10px;backg
 button.link{background:none;color:var(--muted);font-weight:400;text-decoration:underline;margin-top:8px}
 .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;text-align:center}
 .kpi b{display:block;font-size:1.3rem}.err{color:#d33;min-height:1.4em}
+button.tab{width:auto;margin:4px 6px 0 0;padding:8px 12px;font-weight:500}
+button.tab.on{outline:2px solid var(--text)}
+.set{display:grid;grid-template-columns:2rem 1fr 1fr 2rem;gap:6px;align-items:center;margin:4px 0}.set input[type=checkbox]{width:auto}
+.ex{margin:14px 0 4px;font-weight:600}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -84,7 +88,8 @@ button.link{background:none;color:var(--muted);font-weight:400;text-decoration:u
     <button onclick="logWeight()">Enregistrer</button>
     <div id="wlist" class="muted"></div>
   </div>
-  <div class="card muted">Plan de repas et séances : bientôt disponibles.</div>
+  <div class="card"><h2>Séances</h2><div id="tabs"></div><div id="sess"></div></div>
+  <div class="card muted">Plan de repas : bientôt disponible.</div>
 </section>
 
 <button class="link" id="out" onclick="sb.auth.signOut()" hidden>Se déconnecter</button>
@@ -163,6 +168,7 @@ async function dash() {
     .map(([l, v]) => `<div><b>${v}</b><span class="muted">${l}</span></div>`).join('');
   show('dash');
   listWeights();
+  loadProgram();
 }
 
 function monday() {
@@ -177,6 +183,44 @@ async function logWeight() {
 async function listWeights() {
   const { data } = await sb.from('weight_logs').select('week_start,weight_kg').order('week_start', { ascending: false }).limit(6);
   $('wlist').textContent = (data || []).map((r) => `${r.week_start} : ${r.weight_kg} kg`).join('  •  ');
+}
+let prog = null; const exMap = {};
+async function loadProgram() {
+  const [p, e] = await Promise.all([
+    sb.from('programs').select('*').eq('id', `${profile.location}_${profile.train_days}j`).maybeSingle(),
+    sb.from('exercises').select('*'),
+  ]);
+  prog = p.data; (e.data || []).forEach((x) => (exMap[x.id] = x));
+  if (!prog) { $('tabs').innerHTML = ''; return ($('sess').textContent = 'Programme bientôt disponible.'); }
+  $('tabs').innerHTML = prog.sessions.map((s, i) => `<button class="tab" id="tab${i}" onclick="openSession(${i})">${s.name}</button>`).join('');
+  openSession(0);
+}
+const today = () => new Date().toISOString().slice(0, 10);
+async function openSession(i) {
+  prog.sessions.forEach((_, k) => $('tab' + k).classList.toggle('on', k === i));
+  const s = prog.sessions[i], ids = s.exercises.map((x) => x.exercise_id);
+  const { data } = await sb.from('workout_sets').select('*').eq('day', today()).in('exercise_id', ids);
+  const saved = {}; (data || []).forEach((r) => (saved[r.exercise_id + r.set_no] = r));
+  $('sess').innerHTML = s.exercises.map((x) => {
+    const e = exMap[x.exercise_id] || { name: x.exercise_id, cue: '' };
+    let rows = '';
+    for (let n = 1; n <= x.sets; n++) {
+      const r = saved[x.exercise_id + n] || {};
+      rows += `<div class="set" data-ex="${x.exercise_id}" data-n="${n}"><span class="muted">S${n}</span>
+        <input type="number" class="r" placeholder="${x.rep_min}-${x.rep_max} reps" value="${r.reps ?? ''}" onchange="saveSet(this.parentNode)">
+        <input type="number" class="l" step="0.5" placeholder="kg" value="${r.load_kg ?? ''}" onchange="saveSet(this.parentNode)">
+        <input type="checkbox" class="d" ${r.done ? 'checked' : ''} onchange="saveSet(this.parentNode)"></div>`;
+    }
+    return `<div class="ex">${e.name}</div><div class="muted">${e.cue}</div>${rows}`;
+  }).join('');
+}
+async function saveSet(row) {
+  await sb.from('workout_sets').upsert({
+    user_id: session.user.id, day: today(), exercise_id: row.dataset.ex, set_no: +row.dataset.n,
+    reps: row.querySelector('.r').value ? +row.querySelector('.r').value : null,
+    load_kg: row.querySelector('.l').value ? +row.querySelector('.l').value : null,
+    done: row.querySelector('.d').checked,
+  });
 }
 </script>
 </body>
